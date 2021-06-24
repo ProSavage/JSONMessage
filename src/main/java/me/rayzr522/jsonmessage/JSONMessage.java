@@ -7,7 +7,6 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
-
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.entity.Player;
@@ -17,11 +16,8 @@ import java.lang.invoke.MethodHandles;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
-import java.util.UUID;
-import java.util.Vector;
+import java.util.*;
+import java.util.function.Function;
 
 /**
  * This is a complete JSON message builder class. To create a new JSONMessage do
@@ -633,6 +629,7 @@ public class JSONMessage {
         private static Constructor<?> chatComponentText;
 
         private static Class<?> packetPlayOutChat;
+        private static Constructor<?> packetPlayOutChatConstructor;
         private static Field packetPlayOutChatComponent;
         private static Field packetPlayOutChatMessageType;
         private static Field packetPlayOutChatUuid;
@@ -640,6 +637,7 @@ public class JSONMessage {
         private static Object enumChatMessageTypeActionbar;
 
         private static Constructor<?> titlePacketConstructor;
+        private static Constructor<?> subTitlePacketConstructor;
         private static Constructor<?> titleTimesPacketConstructor;
         private static Object enumActionTitle;
         private static Object enumActionSubtitle;
@@ -658,43 +656,59 @@ public class JSONMessage {
             try {
                 MAJOR_VER = Integer.parseInt(version.split("_")[1]);
 
+                final boolean below17 = MAJOR_VER < 17;
+                final String networkChat = "net.minecraft.network.chat";
+
                 final Class<?> craftPlayer = getClass("{obc}.entity.CraftPlayer");
                 Method getHandle = craftPlayer.getMethod("getHandle");
-                connection = getHandle.getReturnType().getField("playerConnection");
-                Method sendPacket = connection.getType().getMethod("sendPacket", getClass("{nms}.Packet"));
+                connection = getHandle.getReturnType().getField(below17 ? "playerConnection" : "b");
+                Method sendPacket = connection.getType().getMethod("sendPacket", getClass(below17 ? "{nms}.Packet" : "net.minecraft.network.protocol.Packet"));
 
-                chatComponentText = getClass("{nms}.ChatComponentText").getConstructor(String.class);
+                chatComponentText = getClass(below17 ? "{nms}.ChatComponentText" : networkChat + ".ChatComponentText").getConstructor(String.class);
 
-                final Class<?> iChatBaseComponent = getClass("{nms}.IChatBaseComponent");
+                final Class<?> iChatBaseComponent = getClass(below17 ? "{nms}.IChatBaseComponent" : networkChat + ".IChatBaseComponent");
 
                 Method stringToChat;
 
                 if (MAJOR_VER < 8) {
                     stringToChat = getClass("{nms}.ChatSerializer").getMethod("a", String.class);
                 } else {
-                    stringToChat = getClass("{nms}.IChatBaseComponent$ChatSerializer").getMethod("a", String.class);
+                    stringToChat = getClass(below17 ? "{nms}.IChatBaseComponent$ChatSerializer" : networkChat + ".IChatBaseComponent$ChatSerializer").getMethod("a", String.class);
                 }
 
                 GET_HANDLE = MethodHandles.lookup().unreflect(getHandle);
                 SEND_PACKET = MethodHandles.lookup().unreflect(sendPacket);
                 STRING_TO_CHAT = MethodHandles.lookup().unreflect(stringToChat);
 
-                packetPlayOutChat = getClass("{nms}.PacketPlayOutChat");
+                final Class<?> chatMessageTypeClass = MAJOR_VER >= 12 ? getClass(below17 ? "{nms}.ChatMessageType" : networkChat + ".ChatMessageType") : null;
+
+                packetPlayOutChat = getClass(below17 ? "{nms}.PacketPlayOutChat" : "net.minecraft.network.protocol.game.PacketPlayOutChat");
+                packetPlayOutChatConstructor = MAJOR_VER < 17 ? packetPlayOutChat.getConstructor() : packetPlayOutChat
+                    .getConstructor(iChatBaseComponent, chatMessageTypeClass, UUID.class);
                 packetPlayOutChatComponent = getField(packetPlayOutChat, "a");
                 packetPlayOutChatMessageType = getField(packetPlayOutChat, "b");
                 packetPlayOutChatUuid = MAJOR_VER >= 16 ? getField(packetPlayOutChat, "c") : null;
 
-                Class<?> packetPlayOutTitle = getClass("{nms}.PacketPlayOutTitle");
-                Class<?> titleAction = getClass("{nms}.PacketPlayOutTitle$EnumTitleAction");
+                if (below17) {
+                    final Class<?> packetPlayOutTitle = getClass("{nms}.PacketPlayOutTitle");
+                    final Class<?> titleAction = getClass("{nms}.PacketPlayOutTitle$EnumTitleAction");
 
-                titlePacketConstructor = packetPlayOutTitle.getConstructor(titleAction, iChatBaseComponent);
-                titleTimesPacketConstructor = packetPlayOutTitle.getConstructor(int.class, int.class, int.class);
-
-                enumActionTitle = titleAction.getField("TITLE").get(null);
-                enumActionSubtitle = titleAction.getField("SUBTITLE").get(null);
+                    titleTimesPacketConstructor = packetPlayOutTitle.getConstructor(int.class, int.class, int.class);
+                    titlePacketConstructor = packetPlayOutTitle.getConstructor(titleAction, iChatBaseComponent);
+                    enumActionTitle = titleAction.getField("TITLE").get(null);
+                    enumActionSubtitle = titleAction.getField("SUBTITLE").get(null);
+                } else {
+                    final Function<String, String> gamePackage = addition -> "net.minecraft.network.protocol.game." + addition;
+                    titleTimesPacketConstructor = getClass(gamePackage.apply("ClientboundSetTitlesAnimationPacket"))
+                        .getConstructor(int.class, int.class, int.class);
+                    titlePacketConstructor = getClass(gamePackage.apply("ClientboundSetTitleTextPacket"))
+                        .getConstructor(iChatBaseComponent);
+                    subTitlePacketConstructor = getClass(gamePackage.apply("ClientboundSetSubtitleTextPacket"))
+                        .getConstructor(iChatBaseComponent);
+                }
 
                 if (MAJOR_VER >= 12) {
-                    Method getChatMessageType = getClass("{nms}.ChatMessageType").getMethod("a", byte.class);
+                    Method getChatMessageType = chatMessageTypeClass.getMethod("a", byte.class);
 
                     enumChatMessageTypeMessage = getChatMessageType.invoke(null, (byte) 1);
                     enumChatMessageTypeActionbar = getChatMessageType.invoke(null, (byte) 2);
@@ -737,7 +751,14 @@ public class JSONMessage {
             assertIsSetup();
 
             try {
-                Object packet = packetPlayOutChat.newInstance();
+                if (MAJOR_VER >= 17) {
+                    return packetPlayOutChatConstructor.newInstance(
+                        fromJson(message),
+                        enumChatMessageTypeMessage,
+                        UUID.randomUUID()
+                    );
+                }
+                Object packet = packetPlayOutChatConstructor.newInstance();
                 setFieldValue(packetPlayOutChatComponent, packet, fromJson(message));
                 setFieldValue(packetPlayOutChatUuid, packet, UUID.randomUUID());
                 setType(packet, (byte) 1);
@@ -752,6 +773,9 @@ public class JSONMessage {
             assertIsSetup();
 
             try {
+                if (MAJOR_VER >= 17) {
+                    return titlePacketConstructor.newInstance(fromJson(message));
+                }
                 return titlePacketConstructor.newInstance(enumActionTitle, fromJson(message));
             } catch (Exception e) {
                 e.printStackTrace();
@@ -774,6 +798,9 @@ public class JSONMessage {
             assertIsSetup();
 
             try {
+                if (MAJOR_VER >= 17) {
+                    return subTitlePacketConstructor.newInstance(fromJson(message));
+                }
                 return titlePacketConstructor.newInstance(enumActionSubtitle, fromJson(message));
             } catch (Exception e) {
                 e.printStackTrace();
@@ -999,7 +1026,7 @@ public class JSONMessage {
                 return legacyColor;
             }
 
-            if (this.color.startsWith("#") && ReflectionHelper.MAJOR_VER < 16)
+            if (this.color != null && this.color.startsWith("#") && ReflectionHelper.MAJOR_VER < 16)
                 throw new IllegalStateException("Custom Hex colors can only be used in Minecraft 1.16 or newer!");
 
             try {

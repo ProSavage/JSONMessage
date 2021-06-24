@@ -1,0 +1,4 @@
+name: JSONMessage
+version: 1.0.0
+main: me.rayzr522.jsonmessage.TestPlugin
+description: Test plugin for JSONMessage
