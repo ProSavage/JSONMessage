@@ -32,9 +32,9 @@
 
 	<distributionManagement>
 		<repository>
-			<id>internal.repo</id>
-			<name>Build repo</name>
-			<url>file://${basedir}/../maven-repo</url>
+			<id>github</id>
+			<name>GitHub ProSavage Apache Maven Packages</name>
+			<url>https://maven.pkg.github.com/ProSavage/JSONMessage</url>
 		</repository>
 	</distributionManagement>
 
